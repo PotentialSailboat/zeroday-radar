@@ -1,57 +1,122 @@
-# ZeroDay Radar
+# ZeroDay Radar v0.2
 
-Open-source, analyst-focused dashboard for **CISA KEV** records, enriched with **FIRST EPSS** and selected **NIST NVD** severity data. Version 0.1.
+**Live dashboard:** https://potentialsailboat.github.io/zeroday-radar/  
+**RSS feed (after the upgraded collector runs on `main`):** https://potentialsailboat.github.io/zeroday-radar/feed.xml
 
-## Deploy on GitHub Pages (no coding required)
+ZeroDay Radar is an open-source, static cybersecurity intelligence dashboard for security analysts, SOC teams and vulnerability-management practitioners. It correlates CISA **Known Exploited Vulnerabilities (KEV)** with FIRST **Exploit Prediction Scoring System (EPSS)** probabilities and bounded **NIST NVD** enrichment.
 
-1. Download and unzip the project archive.
-2. On GitHub, click **+ → New repository**. Name it `zeroday-radar`, select **Public**, and click **Create repository**. Do **not** initialise it with a README (this project includes one).
-3. In the new repository, select **uploading an existing file** (or **Add file → Upload files**). Upload the **contents** of the unzipped `zeroday-radar` folder, keeping the folder structure. **Important:** GitHub's web uploader may not accept hidden `.github` directories reliably. If `.github/workflows/update.yml` is missing after upload, create it using **Add file → Create new file**, enter `.github/workflows/update.yml` as the filename and paste the file's contents. Also create `.nojekyll` if missing.
-4. Go to **Settings → Actions → General → Workflow permissions** and select **Read and write permissions**, then save. This lets the collector commit its JSON data.
-5. Go to **Settings → Pages → Build and deployment**, set **Source** to **GitHub Actions**.
-6. Go to **Actions → Update threat intelligence → Run workflow**. The first run collects the data and deploys the site. It may take several minutes because the NVD API is rate-limited.
-7. Once the workflow succeeds, visit `https://YOUR-USERNAME.github.io/zeroday-radar/` (replace YOUR-USERNAME). If the page shows no data, inspect the workflow logs and verify `data/vulnerabilities.json` exists in the repository.
+It is **not a vulnerability scanner**, an inventory management system, or a verified catalogue of previously unknown zero-day vulnerabilities. It focuses on CVEs in CISA KEV, which CISA has identified as exploited in the wild. It does not determine if your organisation uses an affected product.
 
-GitHub Actions also attempts scheduled updates every six hours. Scheduled runs may be delayed; GitHub can disable schedules on inactive public repositories. Check the **Last updated** indicator.
+## Using the dashboard
 
-## Optional NVD API key
+1. **Start with the overview** to check the last collection time, coverage and triage categories.
+2. **Review Intelligence changes** for new KEV additions or substantial EPSS probability increases; subscribe to the RSS feed in your preferred reader.
+3. **Search or filter** by CVE, product, vendor and priority; sort by date, EPSS or available CVSS.
+4. **Validate the source** by opening the NVD details and relevant vendor/CISA advisories.
+5. **Check applicability** against your actual assets, affected versions, internet exposure and compensating controls. Raise remediation work only with supporting evidence.
 
-The collector enriches only the newest 15 KEV records per run, to respect NVD rate limits. You can request an NVD API key from NIST and add it under **Settings → Secrets and variables → Actions → New repository secret** named `NVD_API_KEY`. Never commit the key. Increasing `NVD_ENRICH_LIMIT` is possible but increases runtime and API use.
+### How the metrics should be interpreted
 
-## Run locally
+- **KEV**: evidence of exploitation in the wild as assessed by CISA, not necessarily exploitation against *your* environment.
+- **EPSS**: probability from 0 to 1 estimating exploitation in the next 30 days, not an impact score or confirmed attack activity.
+- **CVSS**: technical severity, available only for records enriched in NVD; missing is not zero.
+- **Priority** (transparent heuristic, *not* asset-aware): Critical = KEV and EPSS ≥ 0.50; High = KEV and EPSS ≥ 0.10; otherwise Elevated. All records are CISA KEV and warrant investigation based on exposure.
+- **Momentum**: change in EPSS **percentage points** between the two most recent stored daily observations for that CVE; blank until two observations exist.
 
-Install Python 3.10+ and run:
+## v0.2 RSS alerts
 
-```bash
-python scripts/collect.py
-python -m http.server 8000
+The `/feed.xml` feed supports two implemented event types:
+
+| Alert | Condition | Notes |
+|---|---|---|
+| Newly observed CISA KEV | CVE appears that did not exist in the previous successful collection | First ever collection creates a baseline and emits **zero** alerts |
+| EPSS rise | Current probability minus previous UTC-day baseline is **at least 0.25 (25 percentage points)** | A CVE can alert once per UTC day; this is a signal, *not* exploitation confirmation |
+
+**Reserved for future releases (not implemented):** newly observed public PoC references and new vendor patches or mitigations. These require independent source integration and validation; neither is inferred from arbitrary text.
+
+### Collector cadence and data history
+
+- GitHub Actions runs on **`main` every six hours** at `17 */6 * * *` UTC (not guaranteed exact).
+- The first successful collection in a UTC day freezes the **daily EPSS baseline** for that date; future runs do not rewrite that baseline.
+- Up to 45 UTC days of snapshots and 200 RSS alerts are retained in the repository. These are bounded limits, not permanent archival.
+- KEV changes are assessed against the last successful collection, not the previous daily baseline.
+- Alerts are deduplicated by **CVE + category + UTC date**. This deliberately suppresses repeated alerts in the same UTC day.
+- Each GitHub Pages site serves static JSON and RSS files. No server, accounts, secrets or email notification service is involved.
+
+## Deploying via `dev` → `main` (recommended)
+
+**Important:** GitHub Pages currently serves `main`. Changes placed on `dev` are not deployed. Do not change the Pages source to `dev`.
+
+1. Download the v0.2 ZIP and **extract it**. It contains a `zeroday-radar/` directory with all source files.
+2. In https://github.com/potentialsailboat/zeroday-radar, use the branch selector on the Code tab and choose **`dev`**. Double-check that `dev` is visible before editing or uploading.
+3. Upload the files and folders from inside `zeroday-radar/` to the **root of `dev`**, keeping `.github/workflows/update.yml` and `.github/workflows/validate.yml` in their exact directories. Files with the same names must be *replaced*, not duplicated in a second folder.
+4. Commit the changes to `dev`. GitHub's web UI may not reliably overwrite nested files through bulk upload. For files that already exist, edit them individually through GitHub's pencil icon, **or use the GitHub Desktop method below**.
+5. Check **Actions → Validate ZeroDay Radar** for successful unit and syntax tests on `dev`. It uses no API credentials and does not deploy the production website.
+6. Optionally use **Actions → Update threat intelligence → Run workflow**, selecting `dev` in the branch dropdown. This does a live collection and validates output, but deliberately **does not commit data or deploy** from `dev`.
+7. Create a pull request: **base `main` ← compare `dev`**. Review the diff and ensure the validation workflow passed. Merge it into `main`.
+8. On `main`, go to **Actions → Update threat intelligence → Run workflow** and select `main` for the first v0.2 collection. Check that the collection, commit and Pages deployment succeeded.
+9. Visit the dashboard and `/feed.xml`. Your first collection should show **no new alerts**, because it creates the baseline. On subsequent successful collections meaningful changes will appear.
+
+### Easier uploading with GitHub Desktop
+
+1. Install GitHub Desktop and **Clone a repository** for `potentialsailboat/zeroday-radar`.
+2. Select **Current Branch → dev** (fetch origin first if necessary).
+3. Copy the *contents* of the downloaded `zeroday-radar` folder into the local cloned repository. Allow replacement of matching files; keep the `.git` folder untouched.
+4. Review changed files in GitHub Desktop. Add a commit message such as `feat: v0.2 intelligence history and RSS`.
+5. Click **Commit to dev**, then **Push origin**, and create a pull request from `dev` to `main`.
+
+### Important workflow configuration
+
+- GitHub repository **Settings → Pages → Source: GitHub Actions**.
+- The `update.yml` workflow uses `contents: write` to commit refreshed data to `main`. Repository Settings → Actions → General → Workflow permissions must allow writes; branch protection settings must also permit your chosen automation strategy.
+- `NVD_API_KEY` is optional. If used, store it in **Settings → Secrets and variables → Actions**. Never commit credentials.
+- A GitHub-hosted scheduled workflow normally runs only on the **default branch**. A manual run on `dev` is for testing only, and no production Pages deployment occurs.
+- After updating `update.yml`, verify the new workflow permissions and output in the Actions logs.
+
+## Repository structure
+
+```
+.github/workflows/update.yml      Scheduled collection & main-only deployment
+.github/workflows/validate.yml    Push/PR tests (no deployment)
+scripts/collect.py                Live CISA/EPSS/NVD collector
+scripts/intelligence_history.py   Snapshots, change detection and RSS
+tests/test_history.py             Offline unit tests
+index.html, style.css, app.js     Dashboard UI
+data/vulnerabilities.json         Generated current records (not bundled)
+data/history.json                 Generated daily EPSS baselines
+data/alerts.json                  Generated alert log
+feed.xml                          Generated RSS feed
 ```
 
-Visit `http://localhost:8000`. Opening `index.html` directly via `file://` won't reliably load the JSON file.
+## Run tests locally
 
-## Data and limitations
+With Python 3.12+:
 
-- **Coverage:** only vulnerabilities in the CISA KEV catalogue; **not** all CVEs, not a comprehensive zero-day detector.
-- **EPSS:** FIRST estimates probability of exploitation over the next 30 days. KEV confirms known exploitation; EPSS alone does not.
-- **NVD:** severity is enriched for the most recent 15 KEV records each run. Missing CVSS is displayed as unavailable. Historical records may remain without CVSS until a later enrichment strategy is implemented.
-- **Priority tiers:** Critical = KEV + EPSS >= 0.50; High = KEV + EPSS >= 0.10; Elevated = all other KEV records. These are simple triage labels, **not** asset-aware risk ratings. Missing EPSS defaults to Elevated and should be treated as unknown probability.
-- The feed is public and sourced from third parties. No uptime, completeness, or freshness guarantee. Do not rely on this dashboard as the sole security decision source.
-- The workflow writes refreshed public JSON into Git history. At large scale, consider moving snapshots to object storage.
+```bash
+python -m unittest discover -s tests -v
+python scripts/collect.py
+```
 
-## Planned RSS milestone
+The second command calls public external APIs and may take minutes due to NVD rate limits. Only run it when you intend to replace local generated datasets.
 
-Rules agreed for the next release:
-1. New CISA KEV catalogue entry.
-2. EPSS increases by **25 percentage points or more**, measured against the prior successful daily baseline.
-3. Newly observed public PoC reference (distinguish first observed from original publication).
-4. New or materially changed vendor patch/mitigation guidance.
+## Current limitations
 
-Primary channel: RSS/Atom. Implement with source attribution, change detection, deduplication, and persistent history. **These rules are not active in v0.1.**
+- KEV-only coverage, not all published CVEs. No PoC or vendor-update alert integrations yet.
+- Only the newest 15 KEV entries receive NVD enrichment per refresh by default; other CVSS values may be unavailable.
+- Snapshot history starts when v0.2 first runs. Historical EPSS trajectories from earlier days are **not backfilled**.
+- EPSS day-over-day change is a probability estimate; large increases are leads for investigation, not evidence of exploitation.
+- Feed readers fetch RSS on their own schedules. RSS isn't push/instant notification delivery.
+- GitHub scheduled workflows can start late or become disabled due to inactivity.
+- A compromised upstream source, collection outage, or missing enrichment may affect coverage. Inspect the generated warnings and GitHub Actions logs.
+- Public Pages data is visible to anyone. Do not add private asset inventories, secrets or internal CVE annotations to this repository.
 
-## Security
+## Roadmap
 
-Never add credentials to public files. External text is rendered as text (not HTML) to reduce script injection risk. Links to NVD are generated from CVE IDs. GitHub Pages is public; do not upload internal asset inventories or sensitive organisational data.
+- Verified exploit-reference/PoC detection and vendor mitigation changes.
+- CVEs outside KEV, technology watchlists and affected-product matching.
+- More detailed daily change visualisation and source health tracking.
+- Optional user-specific risk overlays without disclosing internal inventories.
 
 ## License
 
-MIT — see LICENSE.
+MIT. Source inputs remain subject to their respective source terms and attribution.

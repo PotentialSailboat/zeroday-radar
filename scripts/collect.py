@@ -10,7 +10,7 @@ NVD='https://services.nvd.nist.gov/rest/json/cves/2.0'
 def fetch(url, headers=None, attempts=3):
     for i in range(attempts):
         try:
-            req=urllib.request.Request(url,headers={'User-Agent':'ZeroDayRadar/0.1 (open-source dashboard)',**(headers or {})})
+            req=urllib.request.Request(url,headers={'User-Agent':'ZeroDayRadar/0.2 (open-source dashboard)',**(headers or {})})
             with urllib.request.urlopen(req,timeout=40) as r: return json.load(r)
         except Exception as e:
             if i==attempts-1: raise
@@ -77,8 +77,9 @@ def main():
         'scope':'CISA KEV catalogue (not all published CVEs)','nvdEnrichedCount':sum(r['cvss'] is not None for r in records.values()),
         'warnings':errors[:25],'vulnerabilities':list(records.values())}
     OUT.parent.mkdir(parents=True,exist_ok=True)
-    tmp=OUT.with_suffix('.tmp');tmp.write_text(json.dumps(output,ensure_ascii=False,separators=(',',':')),encoding='utf-8');tmp.replace(OUT)
-    print(f"Saved {len(records)} KEV records; EPSS coverage {sum(r['epss'] is not None for r in records.values())}; warnings {len(errors)}")
+    from intelligence_history import process_intelligence
+    summary=process_intelligence(ROOT, output, now)
+    print(f"Saved {len(records)} KEV records; EPSS coverage {sum(r['epss'] is not None for r in records.values())}; warnings {len(errors)}; alerts added {summary['newAlerts']}")
 if __name__=='__main__':
     try:main()
     except Exception as e: print('Collector failed:',e,file=sys.stderr);sys.exit(1)
