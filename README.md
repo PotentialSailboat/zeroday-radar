@@ -120,3 +120,12 @@ The second command calls public external APIs and may take minutes due to NVD ra
 ## License
 
 MIT. Source inputs remain subject to their respective source terms and attribution.
+
+## v0.3 — RSS, source health and emerging CVE sample
+
+- `/alerts.html` offers a human-readable alert history. `/feed.xml` remains the RSS endpoint; `feed.xsl` adds a browser preview for browsers supporting XSLT.
+- Source health distinguishes complete, partial, unavailable and cached NVD discovery results. Collection timestamps indicate *fetch time*, not source publication time.
+- Recent NVD CVE discovery is a limited first-page sample of up to 100 CVEs in the preceding seven days. **Recently published does not mean actively exploited**, and not all CVEs are included. NVD data may be temporarily unavailable.
+- Existing KEV + EPSS prioritisation remains the only prioritised table. An NVD discovery item has no KEV status unless the independent KEV catalogue confirms it.
+- The expected PoC and vendor-remediation event feeds are not yet implemented; no unsupported source assertions or fake alert events are generated.
+- See [v0.3 deployment guide](V03-DEPLOY.md) for `dev` → PR → `main` steps.

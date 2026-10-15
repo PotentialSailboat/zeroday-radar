@@ -10,7 +10,7 @@ NVD='https://services.nvd.nist.gov/rest/json/cves/2.0'
 def fetch(url, headers=None, attempts=3):
     for i in range(attempts):
         try:
-            req=urllib.request.Request(url,headers={'User-Agent':'ZeroDayRadar/0.2 (open-source dashboard)',**(headers or {})})
+            req=urllib.request.Request(url,headers={'User-Agent':'ZeroDayRadar/0.3 (open-source dashboard)',**(headers or {})})
             with urllib.request.urlopen(req,timeout=40) as r: return json.load(r)
         except Exception as e:
             if i==attempts-1: raise
@@ -68,17 +68,24 @@ def main():
     previous = load_previous(OUT)
     retained = restore_nvd_fields(records, previous)
     errors=[]
+    epss_failed_batches=0
+    epss_success_batches=0
+    nvd_success=0
+    nvd_failed=0
     # FIRST API supports comma-separated CVE requests. Batches keep URLs reasonably short.
     for batch in chunks(ids,60):
         try:
             url=EPSS+'?'+urllib.parse.urlencode({'cve':','.join(batch)})
             response=fetch(url)
+            epss_success_batches+=1
             for e in response.get('data',[]):
                 r=records.get(e.get('cve'))
                 if r:
                     r['epss']=float(e['epss'])
                     r['epssPercentile']=float(e['percentile'])
-        except Exception as ex: errors.append('EPSS batch failed: '+str(ex))
+        except Exception as ex:
+            epss_failed_batches+=1
+            errors.append('EPSS batch failed: '+str(ex))
         time.sleep(.15)
     # Enrich recent KEV entries only; NVD unauthenticated rate limits are restrictive.
     limit=max(0,min(int(os.environ.get('NVD_ENRICH_LIMIT','15')),100))
@@ -98,13 +105,43 @@ def main():
                 r['cvss'],r['severity']=cvss(cve)
                 r['published']=cve.get('published');r['lastModified']=cve.get('lastModified')
             consecutive_unavailable = 0
+            nvd_success+=1
         except urllib.error.HTTPError as ex:
+            nvd_failed+=1
             errors.append('NVD '+cve_id+': HTTP '+str(ex.code)+' '+str(ex.reason))
             consecutive_unavailable = consecutive_unavailable + 1 if ex.code == 503 else 0
         except Exception as ex:
+            nvd_failed+=1
             errors.append('NVD '+cve_id+': '+str(ex))
             consecutive_unavailable = 0
         time.sleep(.65 if headers else 6.5)
+    # NVD published-window discovery (one bounded call). Discovery != verified exploitation.
+    # On failure, preserve previous emerging records and clearly mark the stale snapshot.
+    window_start=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S.000')
+    window_end=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000')
+    emerging_path=ROOT/'data'/'emerging.json'
+    previous_emerging=load_previous(emerging_path)
+    emerging={'updatedAt':now,'source':NVD,'windowDays':7,'records':[], 'status':'ok'}
+    try:
+        query=urllib.parse.urlencode({'pubStartDate':window_start,'pubEndDate':window_end,'resultsPerPage':100,'startIndex':0})
+        discovered=fetch(NVD+'?'+query,headers)
+        total=discovered.get('totalResults',0)
+        for item in discovered.get('vulnerabilities',[]):
+            cve=item.get('cve',{})
+            cve_id=cve.get('id','')
+            if not cve_id.startswith('CVE-') or cve_id in records: continue
+            desc=next((d.get('value','') for d in cve.get('descriptions',[]) if d.get('lang')=='en'),'')
+            score,severity=cvss(cve)
+            emerging['records'].append({'id':cve_id,'description':desc[:600], 'published':cve.get('published'), 'cvss':score,'severity':severity,'kev':False,'nvdUrl':'https://nvd.nist.gov/vuln/detail/'+cve_id})
+        emerging['totalResults']=total
+        emerging['sampleLimited']=total>100
+    except Exception as ex:
+        errors.append('NVD emerging CVE discovery: '+str(ex))
+        emerging=previous_emerging if previous_emerging.get('records') else emerging
+        emerging['status']='stale' if emerging.get('records') else 'unavailable'
+        emerging['lastAttemptAt']=now
+    emerging_path.parent.mkdir(parents=True,exist_ok=True)
+    emerging_path.write_text(json.dumps(emerging,ensure_ascii=False),encoding='utf-8')
     # Explainable priority tiers: all KEV are exploited, EPSS is a probability not confirmation.
     for r in records.values():
         p=r['epss']
@@ -112,7 +149,7 @@ def main():
         r['priorityReason']='CISA KEV confirms exploitation; '+('EPSS >= 50%' if r['priority']=='Critical' else 'EPSS >= 10%' if r['priority']=='High' else 'EPSS below 10% or unavailable')
     output={'schemaVersion':1,'updatedAt':now,'sources':{'kev':KEV,'epss':EPSS,'nvd':NVD},
         'scope':'CISA KEV catalogue (not all published CVEs)','nvdEnrichedCount':sum(r['cvss'] is not None for r in records.values()),
-        'warnings':errors[:25],'vulnerabilities':list(records.values())}
+        'warnings':errors[:25], 'sourceHealth':{'cisa':{'status':'ok','lastSuccessfulAt':now}, 'epss':{'status':'partial' if epss_failed_batches and epss_success_batches else 'unavailable' if epss_failed_batches else 'ok','successfulBatches':epss_success_batches,'failedBatches':epss_failed_batches,'lastSuccessfulAt':now if epss_success_batches else None},'nvd':{'status':'partial' if nvd_failed and nvd_success else 'unavailable' if nvd_failed else 'ok','successfulLookups':nvd_success,'failedLookups':nvd_failed,'skippedLookups':skipped_due_to_outage,'cachedCvss':retained,'lastSuccessfulAt':now if nvd_success else None},'emerging':{'status':emerging['status'],'recordCount':len(emerging['records']),'lastSuccessfulAt':emerging.get('updatedAt')}}, 'vulnerabilities':list(records.values())}
     OUT.parent.mkdir(parents=True,exist_ok=True)
     from intelligence_history import process_intelligence
     summary=process_intelligence(ROOT, output, now)
