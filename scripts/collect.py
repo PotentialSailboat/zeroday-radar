@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Collect CISA KEV, FIRST EPSS and bounded NVD enrichment. Python stdlib only."""
-import json, os, time, urllib.request, urllib.parse, datetime, pathlib, sys
+import json, os, time, urllib.request, urllib.parse, urllib.error, datetime, pathlib, sys
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 OUT=ROOT/'data'/'vulnerabilities.json'
 KEV='https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
@@ -28,6 +28,29 @@ def cvss(cve):
                 return d.get('baseScore'),d.get('baseSeverity') or entry.get('baseSeverity')
     return None,None
 
+def restore_nvd_fields(records, previous):
+    """Retain prior NVD enrichment when the NVD service is unavailable."""
+    retained = 0
+    for item in previous.get('vulnerabilities', []):
+        current = records.get(item.get('id'))
+        if not current:
+            continue
+        for field in ('cvss', 'severity', 'published', 'lastModified'):
+            if current.get(field) is None and item.get(field) is not None:
+                current[field] = item[field]
+                if field == 'cvss':
+                    retained += 1
+    return retained
+
+
+def load_previous(path):
+    try:
+        with path.open(encoding='utf-8') as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
 def main():
     now=datetime.datetime.now(datetime.timezone.utc).isoformat()
     feed=fetch(KEV)
@@ -42,6 +65,8 @@ def main():
         'notes':e.get('notes',''),'kev':True,'epss':None,'epssPercentile':None,'cvss':None,'severity':None,
         'nvdUrl':'https://nvd.nist.gov/vuln/detail/'+e['cveID']} for e in entries if e.get('cveID')}
     ids=list(records)
+    previous = load_previous(OUT)
+    retained = restore_nvd_fields(records, previous)
     errors=[]
     # FIRST API supports comma-separated CVE requests. Batches keep URLs reasonably short.
     for batch in chunks(ids,60):
@@ -58,7 +83,13 @@ def main():
     # Enrich recent KEV entries only; NVD unauthenticated rate limits are restrictive.
     limit=max(0,min(int(os.environ.get('NVD_ENRICH_LIMIT','15')),100))
     headers={'apiKey':os.environ['NVD_API_KEY']} if os.environ.get('NVD_API_KEY') else {}
-    for cve_id in ids[:limit]:
+    consecutive_unavailable = 0
+    skipped_due_to_outage = 0
+    for index, cve_id in enumerate(ids[:limit]):
+        if consecutive_unavailable >= 3:
+            skipped_due_to_outage = limit - index
+            errors.append(f'NVD unavailable: stopped after 3 consecutive HTTP 503 responses; skipped {skipped_due_to_outage} lookups')
+            break
         try:
             payload=fetch(NVD+'?'+urllib.parse.urlencode({'cveId':cve_id}),headers)
             vulns=payload.get('vulnerabilities',[])
@@ -66,7 +97,13 @@ def main():
                 cve=vulns[0]['cve']; r=records[cve_id]
                 r['cvss'],r['severity']=cvss(cve)
                 r['published']=cve.get('published');r['lastModified']=cve.get('lastModified')
-        except Exception as ex: errors.append('NVD '+cve_id+': '+str(ex))
+            consecutive_unavailable = 0
+        except urllib.error.HTTPError as ex:
+            errors.append('NVD '+cve_id+': HTTP '+str(ex.code)+' '+str(ex.reason))
+            consecutive_unavailable = consecutive_unavailable + 1 if ex.code == 503 else 0
+        except Exception as ex:
+            errors.append('NVD '+cve_id+': '+str(ex))
+            consecutive_unavailable = 0
         time.sleep(.65 if headers else 6.5)
     # Explainable priority tiers: all KEV are exploited, EPSS is a probability not confirmation.
     for r in records.values():
@@ -79,7 +116,9 @@ def main():
     OUT.parent.mkdir(parents=True,exist_ok=True)
     from intelligence_history import process_intelligence
     summary=process_intelligence(ROOT, output, now)
-    print(f"Saved {len(records)} KEV records; EPSS coverage {sum(r['epss'] is not None for r in records.values())}; warnings {len(errors)}; alerts added {summary['newAlerts']}")
+    print(f"Saved {len(records)} KEV records; EPSS coverage {sum(r['epss'] is not None for r in records.values())}; cached CVSS values {retained}; warnings {len(errors)}; alerts added {summary['newAlerts']}")
+    for error in errors[:25]:
+        print('Source warning:', error, file=sys.stderr)
 if __name__=='__main__':
     try:main()
     except Exception as e: print('Collector failed:',e,file=sys.stderr);sys.exit(1)
