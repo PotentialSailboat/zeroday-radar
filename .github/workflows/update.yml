@@ -36,6 +36,7 @@ jobs:
           python -m json.tool data/history.json > /dev/null
           python -m json.tool data/alerts.json > /dev/null
           python -m json.tool data/emerging.json > /dev/null
+          python -m json.tool data/priorities.json > /dev/null
           python -c "import xml.etree.ElementTree as ET; ET.parse('feed.xsl')"
           python -c "import xml.etree.ElementTree as ET; ET.parse('feed.xml')"
       - name: Commit dataset on main only
@@ -43,7 +44,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add data/vulnerabilities.json data/history.json data/alerts.json data/emerging.json feed.xml
+          git add data/vulnerabilities.json data/history.json data/alerts.json data/emerging.json data/priorities.json feed.xml
           if ! git diff --cached --quiet; then
             git commit -m 'chore: refresh intelligence and RSS alerts'
             git push

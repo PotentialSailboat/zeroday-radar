@@ -1,3 +1,27 @@
+# ZeroDay Radar v0.4
+
+**Correlated vulnerability intelligence for security analysts and SOC teams.**
+
+ZeroDay Radar is not another CVE feed. It combines CISA KEV exploitation evidence, FIRST EPSS exploitation-likelihood estimates and their changes, and NVD severity/metadata where available. The **Intelligence Priorities** view explains why to investigate each candidate, links to authoritative evidence, and provides analyst next steps. It does not scan your network or know your assets.
+
+**Quick start:** see [V04-DEPLOY.md](V04-DEPLOY.md) for `dev` testing and safe deployment into `main`. The hosted site has a sticky "Jump to section" navigation; use Intelligence Priorities first, then What Changed, Vulnerability Explorer, Emerging Vulnerabilities and Source Health.
+
+**Coverage:** CISA KEV catalogue plus up to 250 of the newest NVD CVEs discovered within a bounded recent seven-day publication window (up to 8,000 scanned by default). Discovery can be incomplete if more results exist or NVD fails. EPSS coverage and missing CVSS data are shown as unavailable, not as zero. Confirmed exploitation (KEV), predicted exploitation (EPSS) and technical severity (CVSS) must not be conflated.
+
+**RSS:** `feed.xml` and `alerts.html` retain new KEV / EPSS +25 percentage-point alerts, after an initial baseline has been established. PoC and vendor patch-change feeds are on the roadmap. A GitHub-focused trend and advisory feed is explicitly planned for a later release, with trustworthy attribution and deduplication.
+
+**Updates:** the GitHub Actions update workflow runs every six hours on `main`, and on demand on `dev` or `main`. Only `main` writes data back to the repository and deploys Pages.
+
+## Scope limitations and methodology
+
+This is a transparent, rules-based analyst triage system, *not* a calibrated threat risk model. A KEV vulnerability is confirmed exploited; an emerging-only CVE is not. An EPSS estimate is a prediction, not verification. A high CVSS score measures technical impact, not likelihood. Use authoritative sources and your own asset inventory before remediation decisions. Collection snapshots may be stale, incomplete or subject to API outages. No PoC or vendor-change alerts in this release.
+
+## Licences and sources
+
+MIT licensed project. Source information from CISA KEV, FIRST EPSS and NIST NVD; refer to their respective reuse and attribution terms.
+
+---
+
 # ZeroDay Radar v0.2
 
 **Live dashboard:** https://potentialsailboat.github.io/zeroday-radar/  

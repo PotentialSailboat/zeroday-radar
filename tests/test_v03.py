@@ -37,7 +37,7 @@ class V03Tests(unittest.TestCase):
                 if url==collect.KEV:return kev
                 if url.startswith(collect.EPSS):return {'data':[]}
                 if 'pubStartDate=' in url:
-                    self.assertIn('resultsPerPage=100',url)
+                    self.assertIn('resultsPerPage=2000',url)
                     return discovery
                 return {'vulnerabilities':[]}
             try:
