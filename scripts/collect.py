@@ -115,26 +115,63 @@ def main():
             errors.append('NVD '+cve_id+': '+str(ex))
             consecutive_unavailable = 0
         time.sleep(.65 if headers else 6.5)
-    # NVD published-window discovery (one bounded call). Discovery != verified exploitation.
-    # On failure, preserve previous emerging records and clearly mark the stale snapshot.
-    window_start=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S.000')
-    window_end=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000')
+    # Retrieve the recent publication window using correct NVD pagination, then
+    # choose the newest records locally (the first NVD page is oldest-first).
     emerging_path=ROOT/'data'/'emerging.json'
     previous_emerging=load_previous(emerging_path)
-    emerging={'updatedAt':now,'source':NVD,'windowDays':7,'records':[], 'status':'ok'}
+    window_end_dt=datetime.datetime.now(datetime.timezone.utc)
+    window_start=(window_end_dt-datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S.000')
+    window_end=window_end_dt.strftime('%Y-%m-%dT%H:%M:%S.000')
+    emerging={'updatedAt':now,'source':NVD,'windowDays':7,'records':[], 'status':'ok',
+              'collectionComplete':False,'scannedResults':0,'totalResults':0}
+    page_size=2000
+    max_pages=max(1,min(int(os.environ.get('NVD_DISCOVERY_MAX_PAGES','4')),10))
+    discovery_items=[]
     try:
-        query=urllib.parse.urlencode({'pubStartDate':window_start,'pubEndDate':window_end,'resultsPerPage':100,'startIndex':0})
-        discovered=fetch(NVD+'?'+query,headers)
-        total=discovered.get('totalResults',0)
-        for item in discovered.get('vulnerabilities',[]):
+        for page in range(max_pages):
+            query=urllib.parse.urlencode({'pubStartDate':window_start,'pubEndDate':window_end,
+                                          'resultsPerPage':page_size,'startIndex':page*page_size})
+            found=fetch(NVD+'?'+query,headers)
+            total=int(found.get('totalResults',0))
+            items=found.get('vulnerabilities',[])
+            discovery_items.extend(items)
+            emerging['totalResults']=total
+            emerging['scannedResults']=len(discovery_items)
+            if len(discovery_items)>=total or not items: break
+            time.sleep(.7 if headers else 6.5)
+        emerging['collectionComplete']=len(discovery_items)>=emerging['totalResults']
+        if not emerging['collectionComplete']:
+            emerging['status']='partial'
+        eligible=[]
+        for item in discovery_items:
             cve=item.get('cve',{})
             cve_id=cve.get('id','')
             if not cve_id.startswith('CVE-') or cve_id in records: continue
+            if cve.get('vulnStatus')=='Rejected': continue
             desc=next((d.get('value','') for d in cve.get('descriptions',[]) if d.get('lang')=='en'),'')
             score,severity=cvss(cve)
-            emerging['records'].append({'id':cve_id,'description':desc[:600], 'published':cve.get('published'), 'cvss':score,'severity':severity,'kev':False,'nvdUrl':'https://nvd.nist.gov/vuln/detail/'+cve_id})
-        emerging['totalResults']=total
-        emerging['sampleLimited']=total>100
+            eligible.append({'id':cve_id,'description':desc[:600], 'published':cve.get('published'),
+                'lastModified':cve.get('lastModified'),'cvss':score,'severity':severity,'kev':False,
+                'epss':None,'epssPercentile':None,'nvdUrl':'https://nvd.nist.gov/vuln/detail/'+cve_id})
+        eligible.sort(key=lambda r:(r.get('published') or '',r['id']),reverse=True)
+        emerging['records']=eligible[:250]
+        emerging['sampleLimited']=(not emerging['collectionComplete']) or len(eligible)>250
+        # EPSS enrich the selected cross-source discovery candidates, not just KEV.
+        prior_records={r['id']:r for r in previous_emerging.get('records',[])}
+        for batch in chunks([r['id'] for r in emerging['records']],60):
+            try:
+                resp=fetch(EPSS+'?'+urllib.parse.urlencode({'cve':','.join(batch)}))
+                values={r['cve']:r for r in resp.get('data',[])}
+                for r in emerging['records']:
+                    value=values.get(r['id'])
+                    if value:
+                        r['epss']=float(value['epss']);r['epssPercentile']=float(value['percentile'])
+            except Exception as ex:
+                errors.append('Emerging EPSS batch: '+str(ex))
+            time.sleep(.15)
+        for r in emerging['records']:
+            old=prior_records.get(r['id'],{}).get('epss')
+            r['epssDeltaPp']=round((r['epss']-old)*100,2) if isinstance(old,(int,float)) and isinstance(r['epss'],(int,float)) else None
     except Exception as ex:
         errors.append('NVD emerging CVE discovery: '+str(ex))
         emerging=previous_emerging if previous_emerging.get('records') else emerging
@@ -149,10 +186,13 @@ def main():
         r['priorityReason']='CISA KEV confirms exploitation; '+('EPSS >= 50%' if r['priority']=='Critical' else 'EPSS >= 10%' if r['priority']=='High' else 'EPSS below 10% or unavailable')
     output={'schemaVersion':1,'updatedAt':now,'sources':{'kev':KEV,'epss':EPSS,'nvd':NVD},
         'scope':'CISA KEV catalogue (not all published CVEs)','nvdEnrichedCount':sum(r['cvss'] is not None for r in records.values()),
-        'warnings':errors[:25], 'sourceHealth':{'cisa':{'status':'ok','lastSuccessfulAt':now}, 'epss':{'status':'partial' if epss_failed_batches and epss_success_batches else 'unavailable' if epss_failed_batches else 'ok','successfulBatches':epss_success_batches,'failedBatches':epss_failed_batches,'lastSuccessfulAt':now if epss_success_batches else None},'nvd':{'status':'partial' if nvd_failed and nvd_success else 'unavailable' if nvd_failed else 'ok','successfulLookups':nvd_success,'failedLookups':nvd_failed,'skippedLookups':skipped_due_to_outage,'cachedCvss':retained,'lastSuccessfulAt':now if nvd_success else None},'emerging':{'status':emerging['status'],'recordCount':len(emerging['records']),'lastSuccessfulAt':emerging.get('updatedAt')}}, 'vulnerabilities':list(records.values())}
+        'warnings':errors[:25], 'sourceHealth':{'cisa':{'status':'ok','lastSuccessfulAt':now}, 'epss':{'status':'partial' if epss_failed_batches and epss_success_batches else 'unavailable' if epss_failed_batches else 'ok','successfulBatches':epss_success_batches,'failedBatches':epss_failed_batches,'lastSuccessfulAt':now if epss_success_batches else None},'nvd':{'status':'partial' if nvd_failed and nvd_success else 'unavailable' if nvd_failed else 'ok','successfulLookups':nvd_success,'failedLookups':nvd_failed,'skippedLookups':skipped_due_to_outage,'cachedCvss':retained,'lastSuccessfulAt':now if nvd_success else None},'emerging':{'status':emerging['status'],'recordCount':len(emerging['records']),'scannedResults':emerging.get('scannedResults'),'totalResults':emerging.get('totalResults'),'collectionComplete':emerging.get('collectionComplete'),'lastSuccessfulAt':emerging.get('updatedAt')}}, 'vulnerabilities':list(records.values())}
     OUT.parent.mkdir(parents=True,exist_ok=True)
     from intelligence_history import process_intelligence
     summary=process_intelligence(ROOT, output, now)
+    from prioritisation import produce_priorities
+    priorities=produce_priorities(output['vulnerabilities'], emerging['records'], now, emerging.get('status'))
+    (ROOT/'data'/'priorities.json').write_text(json.dumps(priorities,ensure_ascii=False),encoding='utf-8')
     print(f"Saved {len(records)} KEV records; EPSS coverage {sum(r['epss'] is not None for r in records.values())}; cached CVSS values {retained}; warnings {len(errors)}; alerts added {summary['newAlerts']}")
     for error in errors[:25]:
         print('Source warning:', error, file=sys.stderr)
