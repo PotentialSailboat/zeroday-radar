@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from xml.etree import ElementTree as ET
+ET.register_namespace('atom', 'http://www.w3.org/2005/Atom')
 
 KEEP_DAYS = 45
 KEEP_ALERTS = 200
@@ -59,7 +60,7 @@ def make_alert(kind, cve_id, record, now, title, description, priority, source):
         'detectedAt':now,'url':SITE_URL+'?cve='+cve_id,'sourceUrl':source}
 
 def build_rss(alerts, updated_at):
-    rss=ET.Element('rss', {'version':'2.0','xmlns:atom':'http://www.w3.org/2005/Atom'})
+    rss=ET.Element('rss', {'version':'2.0'})
     channel=ET.SubElement(rss,'channel')
     def add(parent, key, value): ET.SubElement(parent,key).text=str(value)
     add(channel,'title','ZeroDay Radar | Threat Intelligence Alerts')
@@ -77,7 +78,7 @@ def build_rss(alerts, updated_at):
             node.text=val
         moment=dt.datetime.fromisoformat(alert['detectedAt'].replace('Z','+00:00'))
         add(item,'pubDate',moment.strftime('%a, %d %b %Y %H:%M:%S +0000'))
-    return ET.tostring(rss,encoding='utf-8',xml_declaration=True)
+    return ET.tostring(rss,encoding='utf-8',xml_declaration=True).replace(b'?>', b'?>\n<?xml-stylesheet type="text/xsl" href="feed.xsl"?>', 1)
 
 def process_intelligence(root, dataset, now):
     root=Path(root); data=root/'data'
